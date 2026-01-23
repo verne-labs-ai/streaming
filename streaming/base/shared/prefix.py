@@ -18,6 +18,7 @@ from torch import distributed as dist
 
 from streaming.base.constant import BARRIER_FILELOCK, CACHE_FILELOCK, LOCALS, SHM_TO_CLEAN, TICK
 from streaming.base.shared import SharedMemory
+from streaming.base.util import retry as retry_decorator
 from streaming.base.world import World
 
 
@@ -230,9 +231,18 @@ def get_shm_prefix(streams_local: list[str],
 
     # Non-local leaders go next, searching for match.
     if not world.is_local_leader:
-        name = _get_path(prefix_int, LOCALS)
+
+        @retry_decorator(exc_class=FileNotFoundError,
+                         num_attempts=100,
+                         initial_backoff=TICK,
+                         max_jitter=0.0)
+        def _attach_to_shm() -> SharedMemory:
+            """Attach to shared memory created by local leader."""
+            name = _get_path(prefix_int, LOCALS)
+            return SharedMemory(name, False)
+
         try:
-            shm = SharedMemory(name, False)
+            shm = _attach_to_shm()
         except FileNotFoundError:
             raise RuntimeError(f'Internal error: shared memory prefix={prefix_int} was not ' +
                                f'registered by local leader. This may be because you specified ' +
